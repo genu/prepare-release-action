@@ -1,0 +1,66 @@
+name: "Prepare Release"
+description: "Creates a release-triggering commit summarizing dependency changes since the last tag. Designed for projects using release-please + Renovate."
+
+inputs:
+    commit-type:
+        description: "Conventional commit type for the release trigger commit"
+        required: false
+        default: "fix"
+    commit-scope:
+        description: "Conventional commit scope for the release trigger commit"
+        required: false
+        default: "deps"
+    commit-message:
+        description: "Conventional commit message (without type/scope prefix)"
+        required: false
+        default: "update dependencies"
+
+outputs:
+    committed:
+        description: "Whether a release commit was created and pushed"
+        value: ${{ steps.commit.outputs.committed }}
+
+runs:
+    using: "composite"
+    steps:
+        - name: Create release commit
+          id: commit
+          shell: bash
+          run: |
+              LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+              if [ -n "$LAST_TAG" ]; then
+                  COMMIT_COUNT=$(git rev-list "${LAST_TAG}..HEAD" --count)
+                  if [ "$COMMIT_COUNT" -eq 0 ]; then
+                      echo "No commits since last release ($LAST_TAG). Nothing to release."
+                      echo "committed=false" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+              fi
+
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+              if [ -z "$LAST_TAG" ]; then
+                  BODY="Initial release"
+              else
+                  BODY=$(jq -nr \
+                      --argjson old "$(git show "${LAST_TAG}:package.json" | jq '[(.dependencies // {}), (.devDependencies // {})] | add')" \
+                      --argjson new "$(jq '[(.dependencies // {}), (.devDependencies // {})] | add' package.json)" \
+                      '[$new | to_entries[] | select($old[.key] != null and $old[.key] != .value) | "\(.key) \($old[.key]) -> \(.value)"] | join(", ") | if . == "" then "routine maintenance" else "Updated: \(.)" end'
+                  )
+              fi
+
+              TYPE="${{ inputs.commit-type }}"
+              SCOPE="${{ inputs.commit-scope }}"
+              MESSAGE="${{ inputs.commit-message }}"
+
+              if [ -n "$SCOPE" ]; then
+                  HEADER="${TYPE}(${SCOPE}): ${MESSAGE}"
+              else
+                  HEADER="${TYPE}: ${MESSAGE}"
+              fi
+
+              git commit --allow-empty -m "$HEADER" -m "$BODY"
+              git push
+              echo "committed=true" >> "$GITHUB_OUTPUT"
