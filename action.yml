@@ -26,7 +26,21 @@ runs:
         - name: Create release commit
           id: commit
           shell: bash
+          env:
+              TYPE: ${{ inputs.commit-type }}
+              SCOPE: ${{ inputs.commit-scope }}
+              MESSAGE: ${{ inputs.commit-message }}
           run: |
+              if ! command -v jq &>/dev/null; then
+                  echo "::error::jq is required but not found"
+                  exit 1
+              fi
+
+              if [ ! -f package.json ]; then
+                  echo "::error::package.json not found in repository root"
+                  exit 1
+              fi
+
               LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 
               if [ -n "$LAST_TAG" ]; then
@@ -43,17 +57,30 @@ runs:
 
               if [ -z "$LAST_TAG" ]; then
                   BODY="Initial release"
+              elif ! git show "${LAST_TAG}:package.json" &>/dev/null; then
+                  BODY="Initial dependency tracking"
               else
-                  BODY=$(jq -nr \
-                      --argjson old "$(git show "${LAST_TAG}:package.json" | jq '[(.dependencies // {}), (.devDependencies // {})] | add')" \
-                      --argjson new "$(jq '[(.dependencies // {}), (.devDependencies // {})] | add' package.json)" \
-                      '[$new | to_entries[] | select($old[.key] != null and $old[.key] != .value) | "\(.key) \($old[.key]) -> \(.value)"] | join(", ") | if . == "" then "routine maintenance" else "Updated: \(.)" end'
-                  )
-              fi
+                  OLD_DEPS=$(git show "${LAST_TAG}:package.json" | jq '[(.dependencies // {}), (.devDependencies // {})] | add')
+                  NEW_DEPS=$(jq '[(.dependencies // {}), (.devDependencies // {})] | add' package.json)
 
-              TYPE="${{ inputs.commit-type }}"
-              SCOPE="${{ inputs.commit-scope }}"
-              MESSAGE="${{ inputs.commit-message }}"
+                  CHANGES=$(jq -nr \
+                      --argjson old "$OLD_DEPS" \
+                      --argjson new "$NEW_DEPS" \
+                      '
+                      [
+                          ($new | to_entries[] | select($old[.key] != null and $old[.key] != .value) | "updated \(.key) \($old[.key]) → \(.value)"),
+                          ($new | to_entries[] | select($old[.key] == null) | "added \(.key) \(.value)"),
+                          ($old | to_entries[] | select($new[.key] == null) | "removed \(.key)")
+                      ] | join(", ")
+                      '
+                  )
+
+                  if [ -n "$CHANGES" ]; then
+                      BODY="$CHANGES"
+                  else
+                      BODY="routine maintenance"
+                  fi
+              fi
 
               if [ -n "$SCOPE" ]; then
                   HEADER="${TYPE}(${SCOPE}): ${MESSAGE}"
@@ -62,5 +89,5 @@ runs:
               fi
 
               git commit --allow-empty -m "$HEADER" -m "$BODY"
-              git push
+              git push origin HEAD
               echo "committed=true" >> "$GITHUB_OUTPUT"
