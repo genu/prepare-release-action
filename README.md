@@ -31,13 +31,19 @@ jobs:
               uses: googleapis/release-please-action@v4
 ```
 
+## Requirements
+
+- `jq` must be available on the runner (included on GitHub-hosted runners)
+- A `package.json` must exist in the repository root
+- `fetch-depth: 0` is required in the checkout step for full git history
+
 ## What it does
 
 1. Checks if there are unreleased commits since the last git tag
-2. Diffs `package.json` dependencies between the last tag and HEAD
+2. Diffs `package.json` dependencies between the last tag and HEAD (updated, added, and removed)
 3. Creates a single `fix(deps): update dependencies` commit with a summary body like:
    ```
-   Updated: @zenstackhq/orm ^3.4.2 -> ^3.4.4, tsdown ^0.20.0 -> ^0.21.0
+   updated @zenstackhq/orm ^3.4.2 → ^3.4.4, added new-pkg ^1.0.0, removed old-pkg
    ```
 4. Pushes the commit, which release-please then picks up to create a release PR
 
