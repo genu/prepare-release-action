@@ -1,5 +1,5 @@
 name: "Prepare Release"
-description: "Creates a release-triggering commit summarizing dependency changes since the last tag. Designed for projects using release-please + Renovate."
+description: "Creates a release-triggering PR summarizing dependency changes since the last tag. Designed for projects using release-please + Renovate."
 
 inputs:
     commit-type:
@@ -14,22 +14,39 @@ inputs:
         description: "Conventional commit message (without type/scope prefix)"
         required: false
         default: "update dependencies"
+    auto-merge:
+        description: "Enable auto-merge on the created PR"
+        required: false
+        default: "true"
+    pr-labels:
+        description: "Comma-separated labels to apply to the PR"
+        required: false
+        default: ""
 
 outputs:
     committed:
-        description: "Whether a release commit was created and pushed"
-        value: ${{ steps.commit.outputs.committed }}
+        description: "Whether a release PR was created"
+        value: ${{ steps.pr.outputs.committed }}
+    pr-url:
+        description: "URL of the created pull request"
+        value: ${{ steps.pr.outputs.pr-url }}
+    pr-number:
+        description: "Number of the created pull request"
+        value: ${{ steps.pr.outputs.pr-number }}
 
 runs:
     using: "composite"
     steps:
-        - name: Create release commit
-          id: commit
+        - name: Prepare release PR
+          id: pr
           shell: bash
           env:
               TYPE: ${{ inputs.commit-type }}
               SCOPE: ${{ inputs.commit-scope }}
               MESSAGE: ${{ inputs.commit-message }}
+              AUTO_MERGE: ${{ inputs.auto-merge }}
+              PR_LABELS: ${{ inputs.pr-labels }}
+              GH_TOKEN: ${{ github.token }}
           run: |
               if ! command -v jq &>/dev/null; then
                   echo "::error::jq is required but not found"
@@ -88,6 +105,33 @@ runs:
                   HEADER="${TYPE}: ${MESSAGE}"
               fi
 
+              # Clean up stale prepare-release branches from previous runs
+              git fetch origin 'refs/heads/prepare-release/*:refs/remotes/origin/prepare-release/*' 2>/dev/null || true
+              for ref in $(git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/prepare-release/'); do
+                  branch="${ref#origin/}"
+                  echo "Deleting stale branch: $branch"
+                  git push origin --delete "$branch" 2>/dev/null || true
+              done
+
+              BRANCH="prepare-release/$(date -u +%Y%m%d-%H%M%S)"
+              git checkout -b "$BRANCH"
+
               git commit --allow-empty -m "$HEADER" -m "$BODY"
-              git push origin HEAD
+              git push origin "$BRANCH"
+
+              PR_ARGS=(--title "$HEADER" --body "$BODY")
+
+              if [ -n "$PR_LABELS" ]; then
+                  PR_ARGS+=(--label "$PR_LABELS")
+              fi
+
+              PR_URL=$(gh pr create "${PR_ARGS[@]}")
+              PR_NUMBER=$(gh pr view "$PR_URL" --json number --jq '.number')
+
+              echo "pr-url=$PR_URL" >> "$GITHUB_OUTPUT"
+              echo "pr-number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
               echo "committed=true" >> "$GITHUB_OUTPUT"
+
+              if [ "$AUTO_MERGE" = "true" ]; then
+                  gh pr merge "$PR_URL" --auto --squash
+              fi
